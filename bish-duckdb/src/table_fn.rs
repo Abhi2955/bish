@@ -19,6 +19,8 @@ static REGISTER_CALLED: AtomicBool = AtomicBool::new(false);
 pub enum RegistrationError {
     #[error("duckdb handle was null")]
     NullDatabaseHandle,
+    #[error("duckdb native linkage is disabled; rebuild with --features duckdb-link")]
+    DuckdbLinkDisabled,
     #[error("failed to create duckdb table function")]
     CreateTableFunctionFailed,
     #[error("duckdb rejected table function registration")]
@@ -60,30 +62,39 @@ pub fn register_bish_functions_for_db(db: *mut c_void) -> Result<(), Registratio
         return Err(RegistrationError::NullDatabaseHandle);
     }
 
-    let tf = unsafe { duckdb_create_table_function() };
-    if tf.is_null() {
-        return Err(RegistrationError::CreateTableFunctionFailed);
+    #[cfg(not(feature = "duckdb-link"))]
+    {
+        return Err(RegistrationError::DuckdbLinkDisabled);
     }
 
-    let func_name = CString::new(TABLE_FUNCTION_NAME).expect("static function name is valid CStr");
-
-    unsafe {
-        duckdb_table_function_set_name(tf, func_name.as_ptr());
-        duckdb_table_function_set_bind(tf, Some(bish_bind));
-        duckdb_table_function_set_init(tf, Some(bish_init));
-        duckdb_table_function_set_function(tf, Some(bish_scan));
-
-        let state = duckdb_register_table_function(db, tf);
-        let mut tf_to_destroy = tf;
-        duckdb_destroy_table_function(&mut tf_to_destroy);
-
-        if state != DUCKDB_SUCCESS {
-            return Err(RegistrationError::RegisterTableFunctionFailed);
+    #[cfg(feature = "duckdb-link")]
+    {
+        let tf = unsafe { duckdb_create_table_function() };
+        if tf.is_null() {
+            return Err(RegistrationError::CreateTableFunctionFailed);
         }
-    }
 
-    REGISTER_CALLED.store(true, Ordering::Relaxed);
-    Ok(())
+        let func_name =
+            CString::new(TABLE_FUNCTION_NAME).expect("static function name is valid CStr");
+
+        unsafe {
+            duckdb_table_function_set_name(tf, func_name.as_ptr());
+            duckdb_table_function_set_bind(tf, Some(bish_bind));
+            duckdb_table_function_set_init(tf, Some(bish_init));
+            duckdb_table_function_set_function(tf, Some(bish_scan));
+
+            let state = duckdb_register_table_function(db, tf);
+            let mut tf_to_destroy = tf;
+            duckdb_destroy_table_function(&mut tf_to_destroy);
+
+            if state != DUCKDB_SUCCESS {
+                return Err(RegistrationError::RegisterTableFunctionFailed);
+            }
+        }
+
+        REGISTER_CALLED.store(true, Ordering::Relaxed);
+        Ok(())
+    }
 }
 
 /// Test/process helper indicating whether registration has been attempted.
@@ -95,18 +106,22 @@ pub fn registration_was_called() -> bool {
     REGISTER_CALLED.load(Ordering::Relaxed)
 }
 
+#[cfg(feature = "duckdb-link")]
 unsafe extern "C" fn bish_bind(_bind_info: *mut c_void) {
     // T-09 will convert BishSchema -> DuckDB logical types in this callback.
 }
 
+#[cfg(feature = "duckdb-link")]
 unsafe extern "C" fn bish_init(_init_info: *mut c_void) {
     // T-10 will initialize projection/filter state for pushdown.
 }
 
+#[cfg(feature = "duckdb-link")]
 unsafe extern "C" fn bish_scan(_function_info: *mut c_void, _output_chunk: *mut c_void) {
     // T-11 will emit decoded values into DuckDB DataChunk.
 }
 
+#[cfg(feature = "duckdb-link")]
 unsafe extern "C" {
     fn duckdb_create_table_function() -> *mut c_void;
     fn duckdb_destroy_table_function(table_function: *mut *mut c_void);
