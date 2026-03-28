@@ -10,12 +10,12 @@
 //! schema in footer chunk A. The [`BishType`] enum is the in-memory
 //! representation; [`arrow2::datatypes::DataType`] is the on-disk form.
 
-use arrow2::datatypes::{
-    DataType as ArrowDataType, Field as ArrowField, TimeUnit, Schema as ArrowSchema,
-};
-use std::collections::HashMap;
-use std::collections::BTreeMap;
 use crate::error::{BishError, BishResult};
+use arrow2::datatypes::{
+    DataType as ArrowDataType, Field as ArrowField, Schema as ArrowSchema, TimeUnit,
+};
+use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BishType
@@ -98,10 +98,7 @@ pub enum BishType {
     ///
     /// Stored as a 128-bit signed integer; the actual value is
     /// `raw_value / 10^scale`.
-    Decimal128 {
-        precision: u8,
-        scale: i8,
-    },
+    Decimal128 { precision: u8, scale: i8 },
 
     // ── Vector / embedding ────────────────────────────────────────────────
     /// Fixed-length array of 32-bit floats — for ML embeddings and ANN search.
@@ -110,9 +107,7 @@ pub enum BishType {
     ///
     /// Stored as a contiguous block of `dim × 4` bytes per value.
     /// Optional HNSW vector index block enables ANN queries directly.
-    Vector {
-        dim: u32,
-    },
+    Vector { dim: u32 },
 
     // ── Nested ────────────────────────────────────────────────────────────
     /// Variable-length list of elements of a single inner type.
@@ -237,9 +232,7 @@ impl BishType {
             BishType::TimestampMs => {
                 ArrowDataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into()))
             }
-            BishType::TimestampS => {
-                ArrowDataType::Timestamp(TimeUnit::Second, Some("UTC".into()))
-            }
+            BishType::TimestampS => ArrowDataType::Timestamp(TimeUnit::Second, Some("UTC".into())),
             BishType::Decimal128 { precision, scale } => {
                 ArrowDataType::Decimal(*precision as usize, *scale as usize)
             }
@@ -255,9 +248,9 @@ impl BishType {
                 true, // inner values are nullable
             ))),
             // Struct → Arrow Struct
-            BishType::Struct(fields) => ArrowDataType::Struct(
-                fields.iter().map(|f| f.to_arrow_field()).collect(),
-            ),
+            BishType::Struct(fields) => {
+                ArrowDataType::Struct(fields.iter().map(|f| f.to_arrow_field()).collect())
+            }
         }
     }
 
@@ -374,8 +367,7 @@ impl BishField {
 
     /// Mark this field as the file's sort key.
     pub fn with_sort_key(mut self) -> Self {
-        self.metadata
-            .insert("bish.sort_key".into(), "true".into());
+        self.metadata.insert("bish.sort_key".into(), "true".into());
         self
     }
 
@@ -394,7 +386,9 @@ impl BishField {
 
     /// Returns `true` if this field is marked as the sort key.
     pub fn is_sort_key(&self) -> bool {
-        self.metadata.get("bish.sort_key").map_or(false, |v| v == "true")
+        self.metadata
+            .get("bish.sort_key")
+            .map_or(false, |v| v == "true")
     }
 
     /// Returns `true` if this field is marked as a partition key.
@@ -406,13 +400,12 @@ impl BishField {
 
     /// Convert to an Arrow [`Field`] for IPC serialisation into footer chunk A.
     pub fn to_arrow_field(&self) -> ArrowField {
-        let btree_meta: BTreeMap<String,String> = self.metadata.iter()
-            .map(|(k,v)|(k.clone(),v.clone())).collect();
-        let mut af = ArrowField::new(
-            &self.name,
-            self.data_type.to_arrow(),
-            self.nullable,
-        );
+        let btree_meta: BTreeMap<String, String> = self
+            .metadata
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let mut af = ArrowField::new(&self.name, self.data_type.to_arrow(), self.nullable);
         af.metadata = btree_meta;
         af
     }
@@ -423,7 +416,11 @@ impl BishField {
             name: f.name.clone(),
             data_type: BishType::from_arrow(f.data_type())?,
             nullable: f.is_nullable,
-            metadata: f.metadata.iter().map(|(k,v)|(k.clone(),v.clone())).collect(),
+            metadata: f
+                .metadata
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
         })
     }
 }
@@ -502,7 +499,10 @@ impl BishSchema {
 
     /// Return all fields marked as partition keys, in schema order.
     pub fn partition_keys(&self) -> Vec<&BishField> {
-        self.fields.iter().filter(|f| f.is_partition_key()).collect()
+        self.fields
+            .iter()
+            .filter(|f| f.is_partition_key())
+            .collect()
     }
 
     /// Return the field marked as the sort key, if any.
@@ -516,7 +516,9 @@ impl BishSchema {
         let mut seen = std::collections::HashSet::new();
         for f in &self.fields {
             if f.name.is_empty() {
-                return Err(BishError::InvalidSchema("Field name must not be empty".into()));
+                return Err(BishError::InvalidSchema(
+                    "Field name must not be empty".into(),
+                ));
             }
             if !seen.insert(&f.name) {
                 return Err(BishError::InvalidSchema(format!(
@@ -599,7 +601,7 @@ impl BishSchema {
 
     /// Deserialise a [`BishSchema`] from Arrow IPC schema bytes (footer chunk A).
     pub fn from_arrow_ipc_bytes(bytes: &[u8]) -> BishResult<Self> {
-        use arrow2::io::ipc::read::{read_stream_metadata, StreamReader};
+        use arrow2::io::ipc::read::read_stream_metadata;
         use std::io::Cursor;
 
         let mut cursor = Cursor::new(bytes);
@@ -612,7 +614,11 @@ impl BishSchema {
             .map(BishField::from_arrow_field)
             .collect::<BishResult<Vec<_>>>()?;
 
-        let file_metadata: HashMap<String,String> = arrow_schema.metadata.iter().map(|(k,v)|(k.clone(),v.clone())).collect();
+        let file_metadata: HashMap<String, String> = arrow_schema
+            .metadata
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
 
         Ok(Self {
             fields,
@@ -624,7 +630,11 @@ impl BishSchema {
     pub fn to_arrow_schema(&self) -> ArrowSchema {
         ArrowSchema {
             fields: self.fields.iter().map(|f| f.to_arrow_field()).collect(),
-            metadata: self.metadata.iter().map(|(k,v)|(k.clone(),v.clone())).collect(),
+            metadata: self
+                .metadata
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
         }
     }
 
@@ -637,7 +647,11 @@ impl BishSchema {
             .collect::<BishResult<Vec<_>>>()?;
         Ok(Self {
             fields,
-            metadata: s.metadata.iter().map(|(k,v)|(k.clone(),v.clone())).collect(),
+            metadata: s
+                .metadata
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
         })
     }
 }
@@ -659,7 +673,7 @@ pub enum ZoneValue {
     Float64(f64),
     Bytes(Vec<u8>), // for Utf8 and Binary — lexicographic min/max
     Bool(bool),
-    None,           // column is all-null — no meaningful min/max
+    None, // column is all-null — no meaningful min/max
 }
 
 impl ZoneValue {
@@ -691,9 +705,7 @@ impl ZoneValue {
             (ZoneValue::Float64(lo), ZoneValue::Float64(hi), ZoneValue::Float64(v)) => {
                 v >= lo && v <= hi
             }
-            (ZoneValue::Bytes(lo), ZoneValue::Bytes(hi), ZoneValue::Bytes(v)) => {
-                v >= lo && v <= hi
-            }
+            (ZoneValue::Bytes(lo), ZoneValue::Bytes(hi), ZoneValue::Bytes(v)) => v >= lo && v <= hi,
             // Null zone means no data — nothing can be in range
             (ZoneValue::None, _, _) | (_, ZoneValue::None, _) => false,
             // Mixed types — conservatively say it might match (don't skip)
@@ -711,12 +723,12 @@ impl ZoneValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Codec {
-    Plain   = 0x00,
-    Lz4     = 0x01,
-    Zstd1   = 0x02,
-    Zstd9   = 0x03,
-    Snappy  = 0x04,
-    Brotli  = 0x05,
+    Plain = 0x00,
+    Lz4 = 0x01,
+    Zstd1 = 0x02,
+    Zstd9 = 0x03,
+    Snappy = 0x04,
+    Brotli = 0x05,
 }
 
 impl Codec {
@@ -763,11 +775,11 @@ impl Codec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Encoding {
-    Plain       = 0x00,
-    Rle         = 0x01,
-    Bitpack     = 0x02,
-    Delta       = 0x03,
-    Dict        = 0x04,
+    Plain = 0x00,
+    Rle = 0x01,
+    Bitpack = 0x02,
+    Delta = 0x03,
+    Dict = 0x04,
     DeltaLength = 0x05,
 }
 
@@ -808,4 +820,3 @@ impl Encoding {
         }
     }
 }
-

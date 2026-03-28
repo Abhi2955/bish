@@ -31,7 +31,6 @@
 //! println!("col[0] int values: {:?}", batch.col_i64(0));
 //! ```
 
-use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 
 use crate::compress::decompress;
@@ -39,7 +38,7 @@ use crate::encoding::{
     decode_delta_i64, decode_delta_length, decode_rle_i64, decode_validity_bitmask,
 };
 use crate::error::{BishError, BishResult};
-use crate::footer::{ColStatEntry, RgDescriptor, parse_chunk_b, parse_chunk_c};
+use crate::footer::{parse_chunk_b, parse_chunk_c, ColStatEntry, RgDescriptor};
 use crate::header::{SuperFooter, BISH_MAGIC, FILE_HEADER_SIZE, SUPER_FOOTER_SIZE};
 use crate::types::{BishSchema, BishType, Codec, Encoding};
 
@@ -54,20 +53,21 @@ use crate::types::{BishSchema, BishType, Codec, Encoding};
 #[derive(Debug, Clone, Default)]
 pub struct ColumnValues {
     /// Non-null i64 values (covers Int8–Int64, UInt*, timestamps, Date32).
-    pub i64_values:   Vec<Option<i64>>,
+    pub i64_values: Vec<Option<i64>>,
     /// Non-null f32 values.
-    pub f32_values:   Vec<Option<f32>>,
+    pub f32_values: Vec<Option<f32>>,
     /// Non-null f64 values.
-    pub f64_values:   Vec<Option<f64>>,
+    pub f64_values: Vec<Option<f64>>,
     /// Non-null bool values.
-    pub bool_values:  Vec<Option<bool>>,
+    pub bool_values: Vec<Option<bool>>,
     /// Non-null byte slice values (Utf8 or Binary).
     pub bytes_values: Vec<Option<Vec<u8>>>,
 }
 
 impl ColumnValues {
     pub fn row_count(&self) -> usize {
-        self.i64_values.len()
+        self.i64_values
+            .len()
             .max(self.f32_values.len())
             .max(self.f64_values.len())
             .max(self.bool_values.len())
@@ -76,7 +76,8 @@ impl ColumnValues {
 
     /// Convenience: interpret bytes_values as UTF-8 strings.
     pub fn utf8_values(&self) -> Vec<Option<String>> {
-        self.bytes_values.iter()
+        self.bytes_values
+            .iter()
             .map(|v| v.as_ref().map(|b| String::from_utf8_lossy(b).into_owned()))
             .collect()
     }
@@ -148,27 +149,27 @@ impl RecordBatch {
 /// The 20-byte page header decoded from disk.
 #[derive(Debug)]
 struct PageHeader {
-    compressed_len:   u32,
+    compressed_len: u32,
     uncompressed_len: u32,
-    row_count:        u32,
-    codec:            Codec,
-    encoding:         Encoding,
-    has_validity:     bool,
-    _checksum:        u32,
+    row_count: u32,
+    codec: Codec,
+    encoding: Encoding,
+    has_validity: bool,
+    _checksum: u32,
 }
 
 impl PageHeader {
     const SIZE: usize = 20;
 
     fn from_bytes(buf: &[u8; Self::SIZE]) -> BishResult<Self> {
-        let compressed_len   = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+        let compressed_len = u32::from_le_bytes(buf[0..4].try_into().unwrap());
         let uncompressed_len = u32::from_le_bytes(buf[4..8].try_into().unwrap());
-        let row_count        = u32::from_le_bytes(buf[8..12].try_into().unwrap());
-        let codec            = Codec::from_u8(buf[12])?;
-        let encoding         = Encoding::from_u8(buf[13])?;
-        let page_flags       = u16::from_le_bytes(buf[14..16].try_into().unwrap());
-        let checksum         = u32::from_le_bytes(buf[16..20].try_into().unwrap());
-        let has_validity     = page_flags & 0x0002 != 0;
+        let row_count = u32::from_le_bytes(buf[8..12].try_into().unwrap());
+        let codec = Codec::from_u8(buf[12])?;
+        let encoding = Encoding::from_u8(buf[13])?;
+        let page_flags = u16::from_le_bytes(buf[14..16].try_into().unwrap());
+        let checksum = u32::from_le_bytes(buf[16..20].try_into().unwrap());
+        let has_validity = page_flags & 0x0002 != 0;
 
         Ok(Self {
             compressed_len,
@@ -188,11 +189,11 @@ impl PageHeader {
 
 /// Reads a `.bish` file with projection and zone-map predicate pushdown.
 pub struct BishReader<R: Read + Seek> {
-    source:          R,
-    schema:          BishSchema,
-    super_footer:    SuperFooter,
-    rg_descriptors:  Vec<RgDescriptor>,
-    col_stats:       Vec<ColStatEntry>,
+    source: R,
+    schema: BishSchema,
+    super_footer: SuperFooter,
+    rg_descriptors: Vec<RgDescriptor>,
+    col_stats: Vec<ColStatEntry>,
 }
 
 impl<R: Read + Seek> BishReader<R> {
@@ -221,29 +222,41 @@ impl<R: Read + Seek> BishReader<R> {
         let schema = Self::load_chunk_a(&mut source, &super_footer)?;
 
         // 4. Load chunk B → row group descriptors
-        let rg_descriptors = Self::load_chunk_b(
-            &mut source, &super_footer, schema.num_columns()
-        )?;
+        let rg_descriptors = Self::load_chunk_b(&mut source, &super_footer, schema.num_columns())?;
 
         // 5. Load chunk C → column statistics
         let col_stats = Self::load_chunk_c(&mut source, &super_footer)?;
 
-        Ok(Self { source, schema, super_footer, rg_descriptors, col_stats })
+        Ok(Self {
+            source,
+            schema,
+            super_footer,
+            rg_descriptors,
+            col_stats,
+        })
     }
 
     // ── Metadata accessors ──────────────────────────────────────────────────
 
     /// The schema of this file.
-    pub fn schema(&self) -> &BishSchema { &self.schema }
+    pub fn schema(&self) -> &BishSchema {
+        &self.schema
+    }
 
     /// Total rows across all row groups.
-    pub fn total_row_count(&self) -> u64 { self.super_footer.total_row_count }
+    pub fn total_row_count(&self) -> u64 {
+        self.super_footer.total_row_count
+    }
 
     /// Number of row groups.
-    pub fn row_group_count(&self) -> u64 { self.super_footer.row_group_count }
+    pub fn row_group_count(&self) -> u64 {
+        self.super_footer.row_group_count
+    }
 
     /// Column statistics for all row groups (used for predicate pushdown).
-    pub fn col_stats(&self) -> &[ColStatEntry] { &self.col_stats }
+    pub fn col_stats(&self) -> &[ColStatEntry] {
+        &self.col_stats
+    }
 
     // ── Full read — no projection, no predicates ─────────────────────────────
 
@@ -294,8 +307,8 @@ impl<R: Read + Seek> BishReader<R> {
 
         // Clone to avoid borrow conflict with self.source
         let rg_descriptors = self.rg_descriptors.clone();
-        let col_stats       = self.col_stats.clone();
-        let schema          = self.schema.clone();
+        let col_stats = self.col_stats.clone();
+        let schema = self.schema.clone();
 
         for rg in &rg_descriptors {
             // Zone map predicate pushdown — skip the whole RG if any
@@ -304,12 +317,7 @@ impl<R: Read + Seek> BishReader<R> {
                 continue;
             }
 
-            let rg_batch = Self::read_row_group(
-                &mut self.source,
-                rg,
-                column_indices,
-                &schema,
-            )?;
+            let rg_batch = Self::read_row_group(&mut self.source, rg, column_indices, &schema)?;
 
             result.extend(rg_batch);
         }
@@ -321,7 +329,9 @@ impl<R: Read + Seek> BishReader<R> {
 
     fn load_chunk_a(source: &mut R, sf: &SuperFooter) -> BishResult<BishSchema> {
         if !sf.chunk_a.is_present() {
-            return Err(BishError::InvalidSchema("chunk A (schema) is missing".into()));
+            return Err(BishError::InvalidSchema(
+                "chunk A (schema) is missing".into(),
+            ));
         }
         let raw = Self::load_chunk_bytes(source, sf.chunk_a.offset, sf.chunk_a.length)?;
 
@@ -377,8 +387,8 @@ impl<R: Read + Seek> BishReader<R> {
             return Err(BishError::Decoding("chunk too short".into()));
         }
         let payload_len = u32::from_le_bytes(raw[4..8].try_into().unwrap()) as usize;
-        let codec       = Codec::from_u8(raw[9])?;
-        let compressed  = &raw[12..12 + payload_len];
+        let codec = Codec::from_u8(raw[9])?;
+        let compressed = &raw[12..12 + payload_len];
         decompress(compressed, codec, payload_len * 4)
     }
 
@@ -390,9 +400,10 @@ impl<R: Read + Seek> BishReader<R> {
         predicates: &[(usize, i64, i64)],
     ) -> bool {
         for &(col_idx, pred_min, pred_max) in predicates {
-            if let Some(stat) = col_stats.iter().find(|s| {
-                s.rg_id == rg.rg_id && s.column_index == col_idx as u16
-            }) {
+            if let Some(stat) = col_stats
+                .iter()
+                .find(|s| s.rg_id == rg.rg_id && s.column_index == col_idx as u16)
+            {
                 // Zone map overlap check:
                 // RG can be skipped if zone_max < pred_min OR zone_min > pred_max
                 if stat.zone_max_i64 < pred_min || stat.zone_min_i64 > pred_max {
@@ -498,14 +509,14 @@ impl<R: Read + Seek> BishReader<R> {
 
     #[allow(clippy::too_many_arguments)]
     fn decode_page(
-        value_bytes:  &[u8],
+        value_bytes: &[u8],
         validity_mask: &[u8],
-        has_validity:  bool,
-        row_count:     usize,
-        encoding:      Encoding,
-        data_type:     &BishType,
-        nullable:      bool,
-        out:           &mut ColumnValues,
+        has_validity: bool,
+        row_count: usize,
+        encoding: Encoding,
+        data_type: &BishType,
+        nullable: bool,
+        out: &mut ColumnValues,
     ) -> BishResult<()> {
         // Build validity vec: true = value is valid (not null)
         let validity: Vec<bool> = if has_validity && nullable {
@@ -532,9 +543,8 @@ impl<R: Read + Seek> BishReader<R> {
             BishType::Float32 => {
                 for i in 0..row_count {
                     if validity[i] {
-                        let v = f32::from_le_bytes(
-                            value_bytes[i*4..(i+1)*4].try_into().unwrap()
-                        );
+                        let v =
+                            f32::from_le_bytes(value_bytes[i * 4..(i + 1) * 4].try_into().unwrap());
                         out.f32_values.push(Some(v));
                     } else {
                         out.f32_values.push(None);
@@ -546,9 +556,8 @@ impl<R: Read + Seek> BishReader<R> {
             BishType::Float64 => {
                 for i in 0..row_count {
                     if validity[i] {
-                        let v = f64::from_le_bytes(
-                            value_bytes[i*8..(i+1)*8].try_into().unwrap()
-                        );
+                        let v =
+                            f64::from_le_bytes(value_bytes[i * 8..(i + 1) * 8].try_into().unwrap());
                         out.f64_values.push(Some(v));
                     } else {
                         out.f64_values.push(None);
@@ -568,9 +577,11 @@ impl<R: Read + Seek> BishReader<R> {
                             if validity[i] {
                                 match raw_iter.next() {
                                     Some(raw) => out.bytes_values.push(Some(raw)),
-                                    None => return Err(BishError::Decoding(
-                                        "DeltaLength exhausted before validity mask end".into()
-                                    )),
+                                    None => {
+                                        return Err(BishError::Decoding(
+                                            "DeltaLength exhausted before validity mask end".into(),
+                                        ))
+                                    }
                                 }
                             } else {
                                 out.bytes_values.push(None);
@@ -585,12 +596,12 @@ impl<R: Read + Seek> BishReader<R> {
                         for i in 0..row_count {
                             if pos + 4 > value_bytes.len() {
                                 return Err(BishError::Decoding(
-                                    "plain varlen truncated at length prefix".into()
+                                    "plain varlen truncated at length prefix".into(),
                                 ));
                             }
-                            let len = u32::from_le_bytes(
-                                value_bytes[pos..pos+4].try_into().unwrap()
-                            ) as usize;
+                            let len =
+                                u32::from_le_bytes(value_bytes[pos..pos + 4].try_into().unwrap())
+                                    as usize;
                             pos += 4;
                             if len == u32::MAX as usize || !validity[i] {
                                 // null sentinel OR validity mask says null
@@ -598,12 +609,11 @@ impl<R: Read + Seek> BishReader<R> {
                             } else {
                                 if pos + len > value_bytes.len() {
                                     return Err(BishError::Decoding(
-                                        "plain varlen truncated in value body".into()
+                                        "plain varlen truncated in value body".into(),
                                     ));
                                 }
-                                out.bytes_values.push(Some(
-                                    value_bytes[pos..pos+len].to_vec()
-                                ));
+                                out.bytes_values
+                                    .push(Some(value_bytes[pos..pos + len].to_vec()));
                                 pos += len;
                             }
                         }
@@ -618,12 +628,13 @@ impl<R: Read + Seek> BishReader<R> {
                         let byte_width = data_type.byte_width().unwrap_or(8);
                         Self::decode_plain_integers(value_bytes, row_count, byte_width)?
                     }
-                    Encoding::Rle   => decode_rle_i64(value_bytes, row_count)?,
+                    Encoding::Rle => decode_rle_i64(value_bytes, row_count)?,
                     Encoding::Delta => decode_delta_i64(value_bytes, row_count)?,
                     other => {
-                        return Err(BishError::Decoding(
-                            format!("Encoding {:?} not supported for integer types", other)
-                        ));
+                        return Err(BishError::Decoding(format!(
+                            "Encoding {:?} not supported for integer types",
+                            other
+                        )));
                     }
                 };
 
@@ -649,7 +660,9 @@ impl<R: Read + Seek> BishReader<R> {
         let expected = count * byte_width;
         if bytes.len() < expected {
             return Err(BishError::Decoding(format!(
-                "plain int buffer: need {} bytes, got {}", expected, bytes.len()
+                "plain int buffer: need {} bytes, got {}",
+                expected,
+                bytes.len()
             )));
         }
         let mut out = Vec::with_capacity(count);
@@ -660,9 +673,12 @@ impl<R: Read + Seek> BishReader<R> {
                 2 => i16::from_le_bytes(slice.try_into().unwrap()) as i64,
                 4 => i32::from_le_bytes(slice.try_into().unwrap()) as i64,
                 8 => i64::from_le_bytes(slice.try_into().unwrap()),
-                w => return Err(BishError::Decoding(
-                    format!("unsupported integer byte width: {}", w)
-                )),
+                w => {
+                    return Err(BishError::Decoding(format!(
+                        "unsupported integer byte width: {}",
+                        w
+                    )))
+                }
             };
             out.push(v);
         }

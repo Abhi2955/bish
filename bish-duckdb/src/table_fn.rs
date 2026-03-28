@@ -38,7 +38,7 @@ impl BishTableFunction {
             .iter()
             .map(|field| DuckdbColumn {
                 name: field.name.clone(),
-                logical_type: duckdb_sql_type_name(&field.typ).to_string(),
+                logical_type: duckdb_sql_type_name(&field.data_type).to_string(),
                 nullable: field.nullable,
             })
             .collect()
