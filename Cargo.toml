@@ -1,0 +1,3 @@
+[workspace]
+members = ["bish-rs"]
+resolver = "2"
