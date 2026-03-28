@@ -50,7 +50,7 @@ places Parquet is used today (Spark, Kafka, Flink, DuckDB, Pandas, Polars).
 
 ---
 
-## 2. Format spec summary (full spec in BISH-FORMAT-SPEC.md)
+## 2. Format spec summary (full spec in docs/Bish-Format-Spec.md)
 
 ### File layout
 
@@ -310,7 +310,7 @@ let batch = reader.scan(&[0, 1, 2], &[(0, 1000, 2000)])?;
 
 | Task | File | Tests |
 |---|---|---|
-| T-01 Binary format spec | BISH-FORMAT-SPEC.md | — |
+| T-01 Binary format spec | docs/Bish-Format-Spec.md | — |
 | T-02 Schema + type system | types.rs | 14 |
 | T-03 Row group + column chunk writer | writer.rs | 10 |
 | T-04 Zone map (min/max) per column chunk | writer.rs | 2 (in T-03 tests) |
@@ -324,7 +324,7 @@ let batch = reader.scan(&[0, 1, 2], &[(0, 1000, 2000)])?;
 | T-06 BishReader | Done ✅ | 43 round-trip tests in `tests/round_trip.rs` |
 | T-07 Round-trip tests | Done ✅ | 43 tests: all types, nulls, multi-RG, predicate pushdown, projection |
 | T-31 Adaptive codec | Heuristic in writer | Dedicated codec selection tests missing |
-| T-35 Format spec doc | BISH-FORMAT-SPEC.md exists | Contributor guide + extension point docs missing |
+| T-35 Format spec doc | docs/Bish-Format-Spec.md exists | Contributor guide + extension point docs missing |
 
 ### Not started ❌ (26 tasks)
 
@@ -704,7 +704,7 @@ Done when: `cargo add bish` works, `docs.rs/bish` shows the public API,
 
 ```
 bish/
-├── BISH-FORMAT-SPEC.md      ← full binary format specification (done)
+├── docs/Bish-Format-Spec.md      ← full binary format specification (done)
 ├── CONTRIBUTING.md          ← contributor guide (TODO)
 ├── README.md                ← benchmark results + quick start (TODO)
 ├── Cargo.toml               ← workspace root

@@ -83,7 +83,7 @@ let batch = reader.scan(&[0, 1], &[(0, 1000, 2000)])?;
 other section. A reader seeks to `EOF − 512`, reads 512 bytes, and knows
 where everything is without scanning the file.
 
-See [`BISH-FORMAT-SPEC.md`](./BISH-FORMAT-SPEC.md) for the complete binary
+See [`docs/Bish-Format-Spec.md`](./docs/Bish-Format-Spec.md) for the complete binary
 format specification with byte-by-byte layouts.
 
 ## Type system

@@ -1,3 +1,3 @@
 [workspace]
-members = ["bish-rs"]
+members = ["bish-rs", "bish-duckdb"]
 resolver = "2"
