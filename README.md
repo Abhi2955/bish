@@ -154,6 +154,12 @@ cargo test --test test_footer     # footer chunk tests only
 cargo test --test test_compress   # codec tests only
 ```
 
+For one-command local setup + verification, run:
+
+```bash
+./setup_local.sh
+```
+
 ## Dependencies
 
 ```toml
