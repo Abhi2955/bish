@@ -43,6 +43,7 @@ pub extern "C" fn duckdb_extension_version() -> *const c_char {
 /// Calling into the C API here forces a concrete link to `libduckdb-sys` so
 /// the extension crate validates native symbol resolution during build/tests.
 pub fn duckdb_library_version() -> &'static str {
+    #[cfg(feature = "duckdb-link")]
     unsafe {
         let ptr = libduckdb_sys::duckdb_library_version();
         if ptr.is_null() {
@@ -51,6 +52,11 @@ pub fn duckdb_library_version() -> &'static str {
             // DuckDB returns a static, null-terminated UTF-8-ish C string.
             std::ffi::CStr::from_ptr(ptr).to_str().unwrap_or("unknown")
         }
+    }
+
+    #[cfg(not(feature = "duckdb-link"))]
+    {
+        "duckdb-link-disabled"
     }
 }
 

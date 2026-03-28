@@ -8,9 +8,13 @@ license = "MIT"
 name = "bish_duckdb"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+duckdb-link = ["dep:libduckdb-sys"]
+
 [dependencies]
 bish = { path = "../bish-rs" }
-libduckdb-sys = { version = "1", features = ["bundled"] }
+libduckdb-sys = { version = "1", optional = true }
 thiserror = "1.0"
 
 [dev-dependencies]
