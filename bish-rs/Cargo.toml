@@ -1,0 +1,18 @@
+[package]
+name = "bish"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "bish"
+path = "src/lib.rs"
+
+[dependencies]
+arrow2 = { version = "0.17", features = ["io_ipc"], default-features = false }
+xxhash-rust = { version = "0.8", features = ["xxh64"] }
+crc32c = "0.6"
+thiserror = "=1.0.50"
+zstd = { version = "0.12", default-features = false, features = ["zstdmt"] }
+lz4_flex = "0.10"
+getrandom = "=0.2.10"
