@@ -18,9 +18,9 @@ use std::io::{BufWriter, Write};
 
 use crate::compress::compress;
 use crate::encoding::{
-    encode_bitpacked_bool, encode_delta_i64, encode_delta_length,
-    encode_plain_f32, encode_plain_f64, encode_plain_i64, encode_plain_varlen,
-    encode_rle_i64, encode_validity_bitmask,
+    encode_bitpacked_bool, encode_delta_i64, encode_delta_length, encode_plain_f32,
+    encode_plain_f64, encode_plain_i64, encode_plain_varlen, encode_rle_i64,
+    encode_validity_bitmask,
 };
 use crate::error::{BishError, BishResult};
 use crate::types::{BishField, BishSchema, BishType, Codec, Encoding, ZoneValue};
@@ -142,14 +142,14 @@ pub struct ColumnChunkWriter {
 
     // Accumulation buffers — one per supported type family.
     // Only one is populated per writer instance (based on field type).
-    i64_buf:    Vec<i64>,
-    f32_buf:    Vec<f32>,
-    f64_buf:    Vec<f64>,
-    bool_buf:   Vec<bool>,
-    bytes_buf:  Vec<Option<Vec<u8>>>,  // for Utf8 / Binary
+    i64_buf: Vec<i64>,
+    f32_buf: Vec<f32>,
+    f64_buf: Vec<f64>,
+    bool_buf: Vec<bool>,
+    bytes_buf: Vec<Option<Vec<u8>>>, // for Utf8 / Binary
 
     /// Validity buffer — None means field is non-nullable (no nulls possible).
-    validity:   Option<Vec<bool>>,
+    validity: Option<Vec<bool>>,
 
     /// Running min/max for zone map.
     zone_min: ZoneValue,
@@ -167,7 +167,11 @@ pub struct ColumnChunkWriter {
 impl ColumnChunkWriter {
     /// Create a new writer for the given field.
     pub fn new(field: BishField, column_index: u16, options: WriteOptions) -> Self {
-        let validity = if field.nullable { Some(Vec::new()) } else { None };
+        let validity = if field.nullable {
+            Some(Vec::new())
+        } else {
+            None
+        };
         Self {
             field,
             column_index,
@@ -243,8 +247,13 @@ impl ColumnChunkWriter {
     pub fn push_bool(&mut self, value: Option<bool>) -> BishResult<()> {
         self.record_validity(value.is_some());
         match value {
-            Some(v) => { self.bool_buf.push(v); }
-            None    => { self.null_count += 1; self.bool_buf.push(false); }
+            Some(v) => {
+                self.bool_buf.push(v);
+            }
+            None => {
+                self.null_count += 1;
+                self.bool_buf.push(false);
+            }
         }
         self.row_count += 1;
         self.maybe_flush_page()
@@ -282,10 +291,19 @@ impl ColumnChunkWriter {
 
     fn update_zone_i64(&mut self, v: i64) {
         match &mut self.zone_min {
-            ZoneValue::None => { self.zone_min = ZoneValue::Int(v); self.zone_max = ZoneValue::Int(v); }
+            ZoneValue::None => {
+                self.zone_min = ZoneValue::Int(v);
+                self.zone_max = ZoneValue::Int(v);
+            }
             ZoneValue::Int(min) => {
-                if v < *min { self.zone_min = ZoneValue::Int(v); }
-                if let ZoneValue::Int(max) = &mut self.zone_max { if v > *max { *max = v; } }
+                if v < *min {
+                    self.zone_min = ZoneValue::Int(v);
+                }
+                if let ZoneValue::Int(max) = &mut self.zone_max {
+                    if v > *max {
+                        *max = v;
+                    }
+                }
             }
             _ => {}
         }
@@ -299,8 +317,14 @@ impl ColumnChunkWriter {
                 self.zone_max = ZoneValue::Float64(v64);
             }
             ZoneValue::Float64(min) => {
-                if v64 < *min { *min = v64; }
-                if let ZoneValue::Float64(max) = &mut self.zone_max { if v64 > *max { *max = v64; } }
+                if v64 < *min {
+                    *min = v64;
+                }
+                if let ZoneValue::Float64(max) = &mut self.zone_max {
+                    if v64 > *max {
+                        *max = v64;
+                    }
+                }
             }
             _ => {}
         }
@@ -313,8 +337,14 @@ impl ColumnChunkWriter {
                 self.zone_max = ZoneValue::Float64(v);
             }
             ZoneValue::Float64(min) => {
-                if v < *min { *min = v; }
-                if let ZoneValue::Float64(max) = &mut self.zone_max { if v > *max { *max = v; } }
+                if v < *min {
+                    *min = v;
+                }
+                if let ZoneValue::Float64(max) = &mut self.zone_max {
+                    if v > *max {
+                        *max = v;
+                    }
+                }
             }
             _ => {}
         }
@@ -327,9 +357,13 @@ impl ColumnChunkWriter {
                 self.zone_max = ZoneValue::Bytes(v.to_vec());
             }
             ZoneValue::Bytes(min) => {
-                if v < min.as_slice() { self.zone_min = ZoneValue::Bytes(v.to_vec()); }
+                if v < min.as_slice() {
+                    self.zone_min = ZoneValue::Bytes(v.to_vec());
+                }
                 if let ZoneValue::Bytes(max) = &self.zone_max {
-                    if v > max.as_slice() { self.zone_max = ZoneValue::Bytes(v.to_vec()); }
+                    if v > max.as_slice() {
+                        self.zone_max = ZoneValue::Bytes(v.to_vec());
+                    }
                 }
             }
             _ => {}
@@ -339,10 +373,8 @@ impl ColumnChunkWriter {
     /// Flush a page if either the row or byte threshold is hit.
     fn maybe_flush_page(&mut self) -> BishResult<()> {
         let row_count = self.current_page_rows();
-        let byte_est  = self.current_page_bytes_estimate();
-        if row_count >= self.options.page_row_target
-            || byte_est >= self.options.page_byte_target
-        {
+        let byte_est = self.current_page_bytes_estimate();
+        if row_count >= self.options.page_row_target || byte_est >= self.options.page_byte_target {
             self.flush_page()?;
         }
         Ok(())
@@ -350,7 +382,8 @@ impl ColumnChunkWriter {
 
     fn current_page_rows(&self) -> usize {
         // All buffers grow in lock-step — check whichever is populated
-        self.i64_buf.len()
+        self.i64_buf
+            .len()
             .max(self.f32_buf.len())
             .max(self.f64_buf.len())
             .max(self.bool_buf.len())
@@ -360,12 +393,11 @@ impl ColumnChunkWriter {
     fn current_page_bytes_estimate(&self) -> usize {
         // Rough: fixed-width uses exact byte width; variable-length uses average.
         match &self.field.data_type {
-            t if t.byte_width().is_some() => {
-                self.current_page_rows() * t.byte_width().unwrap()
-            }
+            t if t.byte_width().is_some() => self.current_page_rows() * t.byte_width().unwrap(),
             _ => {
                 // Estimate: 32 bytes per value on average for strings
-                self.bytes_buf.iter()
+                self.bytes_buf
+                    .iter()
                     .map(|v| v.as_ref().map_or(4, |b| 4 + b.len()))
                     .sum()
             }
@@ -375,7 +407,9 @@ impl ColumnChunkWriter {
     /// Serialise the current accumulation buffer into one page.
     /// Clears the buffer ready for the next page.
     fn flush_page(&mut self) -> BishResult<()> {
-        if self.current_page_rows() == 0 { return Ok(()); }
+        if self.current_page_rows() == 0 {
+            return Ok(());
+        }
 
         let row_count = self.current_page_rows() as u32;
 
@@ -384,12 +418,12 @@ impl ColumnChunkWriter {
 
         // 2. Prepend validity bitmask if needed
         let uncompressed = if let Some(validity) = &self.validity {
-            let n = validity.len();
             // Only write a bitmask when there are actual nulls in this page
             let has_null = validity.iter().any(|&v| !v);
             let mut buf = Vec::new();
             if has_null {
-                let mask = encode_validity_bitmask(&validity[validity.len() - row_count as usize..]);
+                let mask =
+                    encode_validity_bitmask(&validity[validity.len() - row_count as usize..]);
                 buf.extend_from_slice(&mask);
             }
             buf.extend_from_slice(&encoded);
@@ -398,11 +432,10 @@ impl ColumnChunkWriter {
             encoded
         };
 
-        let has_validity = self.validity.as_ref()
-            .map_or(false, |v| {
-                let page_slice = &v[v.len() - row_count as usize..];
-                page_slice.iter().any(|&x| !x)
-            });
+        let has_validity = self.validity.as_ref().map_or(false, |v| {
+            let page_slice = &v[v.len() - row_count as usize..];
+            page_slice.iter().any(|&x| !x)
+        });
 
         let uncompressed_len = uncompressed.len() as u32;
 
@@ -455,28 +488,20 @@ impl ColumnChunkWriter {
 
     fn encode_current_buffer(&self) -> BishResult<(Vec<u8>, Encoding)> {
         match &self.field.data_type {
-            BishType::Boolean => {
-                Ok((encode_bitpacked_bool(&self.bool_buf), Encoding::Bitpack))
-            }
-            BishType::Float32 => {
-                Ok((encode_plain_f32(&self.f32_buf), Encoding::Plain))
-            }
-            BishType::Float64 => {
-                Ok((encode_plain_f64(&self.f64_buf), Encoding::Plain))
-            }
+            BishType::Boolean => Ok((encode_bitpacked_bool(&self.bool_buf), Encoding::Bitpack)),
+            BishType::Float32 => Ok((encode_plain_f32(&self.f32_buf), Encoding::Plain)),
+            BishType::Float64 => Ok((encode_plain_f64(&self.f64_buf), Encoding::Plain)),
             BishType::Utf8 | BishType::Binary => {
-                let cardinality_ratio = self.estimate_cardinality() as f64
-                    / self.bytes_buf.len().max(1) as f64;
+                let cardinality_ratio =
+                    self.estimate_cardinality() as f64 / self.bytes_buf.len().max(1) as f64;
                 if cardinality_ratio < 0.1 {
                     // Low-cardinality strings — delta-length encoding
-                    let non_null: Vec<&[u8]> = self.bytes_buf.iter()
-                        .filter_map(|v| v.as_deref())
-                        .collect();
+                    let non_null: Vec<&[u8]> =
+                        self.bytes_buf.iter().filter_map(|v| v.as_deref()).collect();
                     Ok((encode_delta_length(&non_null), Encoding::DeltaLength))
                 } else {
-                    let refs: Vec<Option<&[u8]>> = self.bytes_buf.iter()
-                        .map(|v| v.as_deref())
-                        .collect();
+                    let refs: Vec<Option<&[u8]>> =
+                        self.bytes_buf.iter().map(|v| v.as_deref()).collect();
                     Ok((encode_plain_varlen(&refs), Encoding::Plain))
                 }
             }
@@ -520,7 +545,9 @@ impl ColumnChunkWriter {
 
     /// Heuristic: a buffer is "sorted" if ≥ 95% of consecutive pairs are non-decreasing.
     fn is_sorted(&self) -> bool {
-        if self.i64_buf.len() < 2 { return true; }
+        if self.i64_buf.len() < 2 {
+            return true;
+        }
         let non_decreasing = self.i64_buf.windows(2).filter(|w| w[1] >= w[0]).count();
         non_decreasing * 100 / (self.i64_buf.len() - 1) >= 95
     }
@@ -605,10 +632,17 @@ pub struct RowGroupWriter {
 impl RowGroupWriter {
     /// Create a new row group writer for all columns in `schema`.
     pub fn new(schema: &BishSchema, rg_id: u32, options: WriteOptions) -> Self {
-        let columns = schema.fields.iter().enumerate().map(|(i, field)| {
-            ColumnChunkWriter::new(field.clone(), i as u16, options.clone())
-        }).collect();
-        Self { rg_id, options, columns }
+        let columns = schema
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(i, field)| ColumnChunkWriter::new(field.clone(), i as u16, options.clone()))
+            .collect();
+        Self {
+            rg_id,
+            options,
+            columns,
+        }
     }
 
     // ── Per-column push API ──────────────────────────────────────────────────
@@ -633,9 +667,9 @@ impl RowGroupWriter {
     }
 
     fn col(&mut self, index: usize) -> BishResult<&mut ColumnChunkWriter> {
-        self.columns.get_mut(index).ok_or_else(|| {
-            BishError::InvalidSchema(format!("Column index {} out of range", index))
-        })
+        self.columns
+            .get_mut(index)
+            .ok_or_else(|| BishError::InvalidSchema(format!("Column index {} out of range", index)))
     }
 
     /// Total rows pushed to column 0 (all columns must have the same count).
@@ -674,4 +708,3 @@ impl RowGroupWriter {
         })
     }
 }
-

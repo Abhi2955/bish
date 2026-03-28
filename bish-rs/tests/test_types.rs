@@ -1,4 +1,4 @@
-use bish::types::{BishType, BishField, BishSchema, ZoneValue, Codec, Encoding};
+use bish::types::{BishField, BishSchema, BishType, Codec, ZoneValue};
 
 #[test]
 fn test_type_round_trips_through_arrow() {
@@ -21,7 +21,10 @@ fn test_type_round_trips_through_arrow() {
         BishType::TimestampUs,
         BishType::TimestampMs,
         BishType::TimestampS,
-        BishType::Decimal128 { precision: 18, scale: 4 },
+        BishType::Decimal128 {
+            precision: 18,
+            scale: 4,
+        },
         BishType::Vector { dim: 1536 },
         BishType::List(Box::new(BishType::Utf8)),
     ];
@@ -38,11 +41,11 @@ fn test_type_round_trips_through_arrow() {
 fn test_schema_column_index() {
     let schema = BishSchema::new(vec![
         BishField::new("user_id", BishType::Utf8),
-        BishField::new("city",    BishType::Utf8),
-        BishField::new("amount",  BishType::Float64),
+        BishField::new("city", BishType::Utf8),
+        BishField::new("amount", BishType::Float64),
     ]);
     assert_eq!(schema.column_index("user_id"), Some(0));
-    assert_eq!(schema.column_index("amount"),  Some(2));
+    assert_eq!(schema.column_index("amount"), Some(2));
     assert_eq!(schema.column_index("missing"), None);
 }
 
@@ -58,22 +61,32 @@ fn test_schema_validate_duplicate_names() {
 #[test]
 fn test_schema_validate_sort_key_type() {
     // Vector is not orderable — should fail as sort key
-    let schema = BishSchema::new(vec![
-        BishField::new("embedding", BishType::Vector { dim: 128 }).with_sort_key(),
-    ]);
+    let schema = BishSchema::new(vec![BishField::new(
+        "embedding",
+        BishType::Vector { dim: 128 },
+    )
+    .with_sort_key()]);
     assert!(schema.validate().is_err());
 }
 
 #[test]
 fn test_schema_validate_decimal_precision() {
-    let bad = BishSchema::new(vec![
-        BishField::new("price", BishType::Decimal128 { precision: 0, scale: 2 }),
-    ]);
+    let bad = BishSchema::new(vec![BishField::new(
+        "price",
+        BishType::Decimal128 {
+            precision: 0,
+            scale: 2,
+        },
+    )]);
     assert!(bad.validate().is_err());
 
-    let good = BishSchema::new(vec![
-        BishField::new("price", BishType::Decimal128 { precision: 10, scale: 2 }),
-    ]);
+    let good = BishSchema::new(vec![BishField::new(
+        "price",
+        BishType::Decimal128 {
+            precision: 10,
+            scale: 2,
+        },
+    )]);
     assert!(good.validate().is_ok());
 }
 
@@ -95,7 +108,10 @@ fn test_codec_adaptive_selection() {
     // Sorted → LZ4 (delta + fast)
     assert_eq!(Codec::select_adaptive(false, 500, 1000, true), Codec::Lz4);
     // Default → ZSTD1
-    assert_eq!(Codec::select_adaptive(false, 500, 1000, false), Codec::Zstd1);
+    assert_eq!(
+        Codec::select_adaptive(false, 500, 1000, false),
+        Codec::Zstd1
+    );
 }
 
 #[test]
@@ -124,4 +140,3 @@ fn test_field_builder_api() {
     assert!(f.is_partition_key());
     assert_eq!(f.metadata.get("bish.doc").unwrap(), "ISO city name");
 }
-

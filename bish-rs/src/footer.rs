@@ -39,7 +39,7 @@
 //! bw.finish().unwrap();
 //! ```
 
-use std::io::{BufWriter, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Seek, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use xxhash_rust::xxh64::xxh64;
@@ -47,11 +47,11 @@ use xxhash_rust::xxh64::xxh64;
 use crate::compress::compress;
 use crate::error::{BishError, BishResult};
 use crate::header::{
-    ChunkRef, FeatureFlags, FileHeader, SectionRef, SuperFooter,
-    BISH_MAGIC, FILE_HEADER_SIZE, SUPER_FOOTER_SIZE,
+    ChunkRef, FeatureFlags, FileHeader, SectionRef, SuperFooter, FILE_HEADER_SIZE,
+    SUPER_FOOTER_SIZE,
 };
-use crate::types::{BishSchema, BishType, Codec, ZoneValue};
-use crate::writer::{ColumnChunkMeta, RowGroupMeta, RowGroupWriter, WriteOptions};
+use crate::types::{BishSchema, Codec, ZoneValue};
+use crate::writer::{RowGroupMeta, RowGroupWriter, WriteOptions};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Footer chunk envelope (spec §8.1)
@@ -127,7 +127,8 @@ pub fn build_chunk_a(schema: &BishSchema) -> BishResult<Vec<u8>> {
 /// ```
 pub fn build_chunk_b(rg_metas: &[RowGroupMeta]) -> BishResult<Vec<u8>> {
     // Pre-calculate total payload size to avoid reallocations
-    let payload_size: usize = rg_metas.iter()
+    let payload_size: usize = rg_metas
+        .iter()
         .map(|rg| 4 + 8 + 8 + 8 + 1 + 2 + rg.columns.len() * 8)
         .sum();
 
@@ -199,14 +200,14 @@ pub fn build_chunk_c(rg_metas: &[RowGroupMeta]) -> BishResult<Vec<u8>> {
                 _ => [0u8; 32],
             };
 
-            payload.extend_from_slice(&rg.rg_id.to_le_bytes());          //  4
-            payload.extend_from_slice(&col.column_index.to_le_bytes());   //  2
-            payload.extend_from_slice(&min_i64.to_le_bytes());            //  8
-            payload.extend_from_slice(&max_i64.to_le_bytes());            //  8
-            payload.extend_from_slice(&min_bytes);                        // 32
-            payload.extend_from_slice(&max_bytes);                        // 32
-            payload.extend_from_slice(&col.null_count.to_le_bytes());     //  8
-            payload.extend_from_slice(&col.row_count.to_le_bytes());      //  8
+            payload.extend_from_slice(&rg.rg_id.to_le_bytes()); //  4
+            payload.extend_from_slice(&col.column_index.to_le_bytes()); //  2
+            payload.extend_from_slice(&min_i64.to_le_bytes()); //  8
+            payload.extend_from_slice(&max_i64.to_le_bytes()); //  8
+            payload.extend_from_slice(&min_bytes); // 32
+            payload.extend_from_slice(&max_bytes); // 32
+            payload.extend_from_slice(&col.null_count.to_le_bytes()); //  8
+            payload.extend_from_slice(&col.row_count.to_le_bytes()); //  8
         }
     }
 
@@ -461,9 +462,9 @@ impl<W: Write + Seek> BishWriter<W> {
             chunk_d: chunk_d_ref,
             chunk_e: chunk_e_ref,
             partition_index: SectionRef::default(),
-            delete_log:      SectionRef::default(),
-            sparse_index:    SectionRef::default(),
-            vector_index:    SectionRef::default(),
+            delete_log: SectionRef::default(),
+            sparse_index: SectionRef::default(),
+            vector_index: SectionRef::default(),
         };
 
         let sf_bytes = super_footer.to_bytes();
@@ -476,16 +477,21 @@ impl<W: Write + Seek> BishWriter<W> {
 
         let total_file_size = self.file_offset + SUPER_FOOTER_SIZE as u64;
 
-        let inner_writer = self.writer.into_inner()
+        let inner_writer = self
+            .writer
+            .into_inner()
             .map_err(|e| BishError::Io(e.into_error()))?;
 
-        Ok((FinishedFile {
-            total_row_count,
-            row_group_count: self.rg_metas.len() as u32,
-            total_file_bytes: total_file_size,
-            schema_hash,
-            rg_metas: self.rg_metas,
-        }, inner_writer))
+        Ok((
+            FinishedFile {
+                total_row_count,
+                row_group_count: self.rg_metas.len() as u32,
+                total_file_bytes: total_file_size,
+                schema_hash,
+                rg_metas: self.rg_metas,
+            },
+            inner_writer,
+        ))
     }
 }
 
@@ -559,7 +565,9 @@ impl ColStatEntry {
     /// Does a float value fall within this column's zone map?
     /// NaN comparisons return true (conservative — don't skip).
     pub fn float_in_range(&self, value: f64) -> bool {
-        if value.is_nan() { return true; }
+        if value.is_nan() {
+            return true;
+        }
         let min = f64::from_bits(self.zone_min_i64 as u64);
         let max = f64::from_bits(self.zone_max_i64 as u64);
         value >= min && value <= max
@@ -581,34 +589,45 @@ impl ColStatEntry {
 ///
 /// This is called by the reader after loading and decompressing chunk B.
 /// The format is the exact inverse of `build_chunk_b`.
-pub fn parse_chunk_b(payload: &[u8], col_count: usize) -> BishResult<Vec<RgDescriptor>> {
+pub fn parse_chunk_b(payload: &[u8], _col_count: usize) -> BishResult<Vec<RgDescriptor>> {
     let mut pos = 0;
     let mut rgs = Vec::new();
 
     while pos + 31 <= payload.len() {
-        let rg_id       = u32::from_le_bytes(payload[pos..pos+4].try_into().unwrap()); pos += 4;
-        let row_count   = u64::from_le_bytes(payload[pos..pos+8].try_into().unwrap()); pos += 8;
-        let file_offset = u64::from_le_bytes(payload[pos..pos+8].try_into().unwrap()); pos += 8;
-        let byte_length = u64::from_le_bytes(payload[pos..pos+8].try_into().unwrap()); pos += 8;
-        let temperature = payload[pos]; pos += 1;
-        let n_cols      = u16::from_le_bytes(payload[pos..pos+2].try_into().unwrap()) as usize; pos += 2;
+        let rg_id = u32::from_le_bytes(payload[pos..pos + 4].try_into().unwrap());
+        pos += 4;
+        let row_count = u64::from_le_bytes(payload[pos..pos + 8].try_into().unwrap());
+        pos += 8;
+        let file_offset = u64::from_le_bytes(payload[pos..pos + 8].try_into().unwrap());
+        pos += 8;
+        let byte_length = u64::from_le_bytes(payload[pos..pos + 8].try_into().unwrap());
+        pos += 8;
+        let temperature = payload[pos];
+        pos += 1;
+        let n_cols = u16::from_le_bytes(payload[pos..pos + 2].try_into().unwrap()) as usize;
+        pos += 2;
 
         if pos + n_cols * 8 > payload.len() {
             return Err(BishError::Decoding(
-                "chunk B truncated in col_chunk_offsets".into()
+                "chunk B truncated in col_chunk_offsets".into(),
             ));
         }
 
         let mut col_chunk_offsets = Vec::with_capacity(n_cols);
         for _ in 0..n_cols {
-            col_chunk_offsets.push(
-                u64::from_le_bytes(payload[pos..pos+8].try_into().unwrap())
-            );
+            col_chunk_offsets.push(u64::from_le_bytes(
+                payload[pos..pos + 8].try_into().unwrap(),
+            ));
             pos += 8;
         }
 
         rgs.push(RgDescriptor {
-            rg_id, row_count, file_offset, byte_length, temperature, col_chunk_offsets,
+            rg_id,
+            row_count,
+            file_offset,
+            byte_length,
+            temperature,
+            col_chunk_offsets,
         });
     }
 
@@ -620,7 +639,9 @@ pub fn parse_chunk_c(payload: &[u8]) -> BishResult<Vec<ColStatEntry>> {
     const ENTRY_SIZE: usize = 102; // 4+2+8+8+32+32+8+8
     if payload.len() % ENTRY_SIZE != 0 {
         return Err(BishError::Decoding(format!(
-            "chunk C payload length {} is not a multiple of {}", payload.len(), ENTRY_SIZE
+            "chunk C payload length {} is not a multiple of {}",
+            payload.len(),
+            ENTRY_SIZE
         )));
     }
 
@@ -629,20 +650,24 @@ pub fn parse_chunk_c(payload: &[u8]) -> BishResult<Vec<ColStatEntry>> {
 
     for i in 0..count {
         let b = &payload[i * ENTRY_SIZE..];
-        let rg_id        = u32::from_le_bytes(b[0..4].try_into().unwrap());
+        let rg_id = u32::from_le_bytes(b[0..4].try_into().unwrap());
         let column_index = u16::from_le_bytes(b[4..6].try_into().unwrap());
         let zone_min_i64 = i64::from_le_bytes(b[6..14].try_into().unwrap());
         let zone_max_i64 = i64::from_le_bytes(b[14..22].try_into().unwrap());
         let zone_min_bytes: [u8; 32] = b[22..54].try_into().unwrap();
         let zone_max_bytes: [u8; 32] = b[54..86].try_into().unwrap();
-        let null_count   = u64::from_le_bytes(b[86..94].try_into().unwrap());
-        let row_count    = u64::from_le_bytes(b[94..102].try_into().unwrap());
+        let null_count = u64::from_le_bytes(b[86..94].try_into().unwrap());
+        let row_count = u64::from_le_bytes(b[94..102].try_into().unwrap());
 
         entries.push(ColStatEntry {
-            rg_id, column_index,
-            zone_min_i64, zone_max_i64,
-            zone_min_bytes, zone_max_bytes,
-            null_count, row_count,
+            rg_id,
+            column_index,
+            zone_min_i64,
+            zone_max_i64,
+            zone_min_bytes,
+            zone_max_bytes,
+            null_count,
+            row_count,
         });
     }
 
@@ -652,7 +677,6 @@ pub fn parse_chunk_c(payload: &[u8]) -> BishResult<Vec<ColStatEntry>> {
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
-
 
 impl BishWriter<std::io::Cursor<Vec<u8>>> {
     /// Finalise and return the raw bytes of the written .bish file.
@@ -665,4 +689,3 @@ impl BishWriter<std::io::Cursor<Vec<u8>>> {
         Ok(cursor.into_inner())
     }
 }
-
