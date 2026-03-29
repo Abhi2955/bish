@@ -8,6 +8,10 @@ license = "MIT"
 name = "bish"
 path = "src/lib.rs"
 
+[[bin]]
+name = "gen_fixture"
+path = "src/bin/gen_fixture.rs"
+
 [dependencies]
 arrow2 = { version = "0.17", features = ["io_ipc"], default-features = false }
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
