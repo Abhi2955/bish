@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 fn main() {
     // ── Linker flags for undefined DuckDB symbols ─────────────────────────────
     //
@@ -28,60 +30,74 @@ fn main() {
     //
     // DuckDB 1.5.x calls  bish_duckdb_duckdb_cpp_init(duckdb::ExtensionLoader&)
     // which must be a real C++ function because ExtensionLoader is a C++ class.
-    // We compile a thin C++ trampoline (shim.cpp) that:
-    //   - receives the ExtensionLoader
-    //   - creates a duckdb::Connection on the stack
-    //   - forwards it to the Rust bish_register_with_conn() function
     //
-    // The DuckDB include path is auto-detected: Homebrew on macOS, /usr on Linux.
-    let include_dir = if cfg!(target_os = "macos") {
-        // Prefer the Homebrew-versioned path, fall back to generic Homebrew prefix.
-        let versioned = "/opt/homebrew/Cellar/duckdb/1.5.1/include";
-        if std::path::Path::new(versioned).exists() {
-            versioned.to_string()
-        } else {
-            "/opt/homebrew/include".to_string()
-        }
-    } else {
-        "/usr/include".to_string()
-    };
+    // Header strategy:
+    //   1. Try well-known system/Homebrew install locations.
+    //   2. Fall back to vendor/duckdb_ext_shim.hpp (bundled minimal stubs,
+    //      no DuckDB installation required).
+    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let vendor_dir = manifest_dir.join("vendor");
 
-    cc::Build::new()
+    // Candidate system include directories, most-specific first.
+    let system_candidates: &[&str] = &[
+        "/opt/homebrew/Cellar/duckdb/1.5.1/include",
+        "/opt/homebrew/include",
+        "/usr/local/include",
+        "/usr/include",
+    ];
+
+    let (include_dir, have_system_headers) = system_candidates
+        .iter()
+        .find(|p| std::path::Path::new(p).join("duckdb/main/connection.hpp").exists())
+        .map(|p| (p.to_string(), true))
+        .unwrap_or_else(|| (vendor_dir.to_str().unwrap().to_string(), false));
+
+    let mut build = cc::Build::new();
+    build
         .cpp(true)
         .std("c++17")
         .include(&include_dir)
         .flag_if_supported("-Wno-unused-parameter")
         .flag_if_supported("-Wno-deprecated-declarations")
-        .file("src/shim.cpp")
-        .compile("bish_shim");
+        .file("src/shim.cpp");
 
-    // Force the linker to include bish_duckdb_duckdb_cpp_init even though
-    // no Rust code references it.  Without this the linker dead-strips the
-    // symbol from the cdylib and DuckDB cannot find the entry point.
+    if have_system_headers {
+        build.define("BISH_HAVE_DUCKDB_HEADERS", "1");
+    }
+
+    build.compile("bish_shim");
+
+    // ── Force the entry-point symbol into the final dylib ────────────────────
     //
-    // We use -force_load on macOS (includes every object in the archive) and
-    // --whole-archive on Linux.
+    // bish_duckdb_duckdb_cpp_init is not referenced from any Rust code, so the
+    // linker would dead-strip it without these flags.
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let archive = format!("{out_dir}/libbish_shim.a");
 
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     match target_os.as_str() {
         "macos" => {
-            // -force_load ensures the shim object is fully included (not lazy-stripped).
+            // -force_load includes every object in the archive.
             println!("cargo:rustc-link-arg=-Wl,-force_load,{archive}");
-            // Export the CPP ABI entry point so DuckDB can dlsym() it.
+            // Export the symbol so DuckDB can dlsym() it.
             println!("cargo:rustc-link-arg=-Wl,-exported_symbol,_bish_duckdb_duckdb_cpp_init");
-            // DuckDB symbols in the shim live in the host process at runtime.
+            // DuckDB C++ symbols resolve at runtime from the host process.
             println!("cargo:rustc-link-arg=-undefined");
             println!("cargo:rustc-link-arg=dynamic_lookup");
         }
         "linux" => {
-            println!("cargo:rustc-link-arg=-Wl,--whole-archive,{archive},--no-whole-archive");
+            // --whole-archive forces all objects in the archive to be included.
+            println!(
+                "cargo:rustc-link-arg=-Wl,--whole-archive,{archive},--no-whole-archive"
+            );
+            // DuckDB C++ symbols (Connection ctor/dtor, GetDatabaseInstance) live
+            // in the host DuckDB process; allow them to be unresolved at link time.
             println!("cargo:rustc-link-arg=-Wl,--allow-shlib-undefined");
         }
         _ => {}
     }
 
     println!("cargo:rerun-if-changed=src/shim.cpp");
+    println!("cargo:rerun-if-changed=vendor/duckdb_ext_shim.hpp");
     println!("cargo:rerun-if-changed=build.rs");
 }
