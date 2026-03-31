@@ -1,56 +1,48 @@
 use bish::reader::BishReader;
 use bish::types::BishType;
-use std::ffi::{c_char, c_void, CString};
+use std::ffi::c_void;
 use std::io::{Read, Seek};
 use std::sync::atomic::{AtomicBool, Ordering};
-
-#[cfg(feature = "duckdb-link")]
-use std::ffi::CStr;
-#[cfg(feature = "duckdb-link")]
-use std::io::BufReader;
 
 use crate::types::{duckdb_sql_type_name, DuckdbColumn};
 
 /// Name that will be registered as a DuckDB table function.
 pub const TABLE_FUNCTION_NAME: &str = "read_bish";
 
-/// DuckDB returns 0 for success in the C API.
-#[cfg(feature = "duckdb-link")]
-const DUCKDB_SUCCESS: u32 = 0;
-
 // DuckDB logical type IDs (from duckdb.h DUCKDB_TYPE enum).
-const DUCKDB_TYPE_BOOLEAN: u32 = 1;
-const DUCKDB_TYPE_TINYINT: u32 = 2;
-const DUCKDB_TYPE_SMALLINT: u32 = 3;
-const DUCKDB_TYPE_INTEGER: u32 = 4;
-const DUCKDB_TYPE_BIGINT: u32 = 5;
-const DUCKDB_TYPE_UTINYINT: u32 = 6;
-const DUCKDB_TYPE_USMALLINT: u32 = 7;
-const DUCKDB_TYPE_UINTEGER: u32 = 8;
-const DUCKDB_TYPE_UBIGINT: u32 = 9;
-const DUCKDB_TYPE_FLOAT: u32 = 10;
-const DUCKDB_TYPE_DOUBLE: u32 = 11;
-const DUCKDB_TYPE_TIMESTAMP: u32 = 12; // microseconds
-const DUCKDB_TYPE_DATE: u32 = 13;
-const DUCKDB_TYPE_VARCHAR: u32 = 17;
-const DUCKDB_TYPE_BLOB: u32 = 18;
-const DUCKDB_TYPE_TIMESTAMP_S: u32 = 32;
-const DUCKDB_TYPE_TIMESTAMP_MS: u32 = 33;
-const DUCKDB_TYPE_TIMESTAMP_NS: u32 = 34;
+pub const DUCKDB_TYPE_BOOLEAN: u32 = 1;
+pub const DUCKDB_TYPE_TINYINT: u32 = 2;
+pub const DUCKDB_TYPE_SMALLINT: u32 = 3;
+pub const DUCKDB_TYPE_INTEGER: u32 = 4;
+pub const DUCKDB_TYPE_BIGINT: u32 = 5;
+pub const DUCKDB_TYPE_UTINYINT: u32 = 6;
+pub const DUCKDB_TYPE_USMALLINT: u32 = 7;
+pub const DUCKDB_TYPE_UINTEGER: u32 = 8;
+pub const DUCKDB_TYPE_UBIGINT: u32 = 9;
+pub const DUCKDB_TYPE_FLOAT: u32 = 10;
+pub const DUCKDB_TYPE_DOUBLE: u32 = 11;
+pub const DUCKDB_TYPE_TIMESTAMP: u32 = 12; // microseconds
+pub const DUCKDB_TYPE_DATE: u32 = 13;
+pub const DUCKDB_TYPE_VARCHAR: u32 = 17;
+pub const DUCKDB_TYPE_BLOB: u32 = 18;
+pub const DUCKDB_TYPE_TIMESTAMP_S: u32 = 32;
+pub const DUCKDB_TYPE_TIMESTAMP_MS: u32 = 33;
+pub const DUCKDB_TYPE_TIMESTAMP_NS: u32 = 34;
 
 /// Maximum rows emitted per DuckDB DataChunk call (STANDARD_VECTOR_SIZE).
-#[cfg(feature = "duckdb-link")]
 const DUCKDB_VECTOR_SIZE: usize = 2048;
+/// DuckDB C API success code.
+const DUCKDB_SUCCESS: u32 = 0;
 
 /// Tracks whether extension registration has run in-process.
 static REGISTER_CALLED: AtomicBool = AtomicBool::new(false);
 
-/// Minimal registration errors while real DuckDB callback wiring lands.
+/// Minimal registration errors.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum RegistrationError {
     #[error("duckdb handle was null")]
     NullDatabaseHandle,
-    #[error("duckdb native linkage is disabled; rebuild with --features duckdb-link")]
+    #[error("duckdb native linkage not available in test mode")]
     DuckdbLinkDisabled,
     #[error("failed to create duckdb table function")]
     CreateTableFunctionFailed,
@@ -58,7 +50,7 @@ pub enum RegistrationError {
     RegisterTableFunctionFailed,
 }
 
-/// Scaffold object for the future DuckDB table function implementation.
+/// Scaffold object retained for Rust-level unit tests.
 #[derive(Debug, Default)]
 pub struct BishTableFunction;
 
@@ -75,12 +67,6 @@ impl BishTableFunction {
                 nullable: field.nullable,
             })
             .collect()
-    }
-
-    /// Scan stage (DuckDB executor): placeholder for page decoding and chunk
-    /// emission into DuckDB's `DataChunk` API.
-    pub fn scan_next(&mut self) -> Option<()> {
-        None
     }
 }
 
@@ -105,61 +91,101 @@ pub fn bish_type_to_duckdb_type_id(typ: &BishType) -> u32 {
         BishType::Date32 => DUCKDB_TYPE_DATE,
         BishType::Utf8 => DUCKDB_TYPE_VARCHAR,
         BishType::Binary => DUCKDB_TYPE_BLOB,
-        // Complex types fall back to VARCHAR for now (T-15 will handle nested).
-        BishType::Decimal128 { .. } | BishType::List(_) | BishType::Struct(_) | BishType::Vector { .. } => {
-            DUCKDB_TYPE_VARCHAR
-        }
+        // Complex types fall back to VARCHAR (T-15 will handle nested types).
+        BishType::Decimal128 { .. }
+        | BishType::List(_)
+        | BishType::Struct(_)
+        | BishType::Vector { .. } => DUCKDB_TYPE_VARCHAR,
     }
 }
 
-/// Registration hook called by `bish_init`.
+/// Registration hook called by the DuckDB extension entry point.
+///
+/// In test builds the DuckDB C API symbols are not available, so the
+/// function returns `DuckdbLinkDisabled`. In cdylib builds all symbols
+/// resolve at load time from the DuckDB host process.
 pub fn register_bish_functions_for_db(db: *mut c_void) -> Result<(), RegistrationError> {
     if db.is_null() {
         return Err(RegistrationError::NullDatabaseHandle);
     }
 
-    #[cfg(not(feature = "duckdb-link"))]
+    // In test builds the DuckDB C API is not linked; skip real registration.
+    #[cfg(test)]
     {
         return Err(RegistrationError::DuckdbLinkDisabled);
     }
 
-    #[cfg(feature = "duckdb-link")]
-    {
-        let tf = unsafe { duckdb_create_table_function() };
-        if tf.is_null() {
-            return Err(RegistrationError::CreateTableFunctionFailed);
+    // In cdylib builds create a connection from the database handle, register,
+    // then disconnect.  The db pointer here is a duckdb_database handle, not
+    // a duckdb_connection — we must go through duckdb_connect first.
+    #[cfg(not(test))]
+    unsafe {
+        let mut conn: *mut c_void = std::ptr::null_mut();
+        // duckdb_connect takes (duckdb_database, *mut duckdb_connection).
+        // Both are pointer-to-struct wrappers; we cast to the void* equivalents
+        // accepted by our extern "C" declarations.
+        let state = duckdb_connect(db, &mut conn as *mut *mut c_void);
+        if state != DUCKDB_SUCCESS || conn.is_null() {
+            return Err(RegistrationError::RegisterTableFunctionFailed);
         }
-
-        let func_name =
-            CString::new(TABLE_FUNCTION_NAME).expect("static function name is valid CStr");
-
-        unsafe {
-            duckdb_table_function_set_name(tf, func_name.as_ptr());
-
-            // Register VARCHAR path parameter (the filename argument).
-            let mut varchar_type = duckdb_create_logical_type(DUCKDB_TYPE_VARCHAR);
-            duckdb_table_function_add_parameter(tf, varchar_type);
-            duckdb_destroy_logical_type(&mut varchar_type);
-
-            duckdb_table_function_set_bind(tf, Some(bish_bind));
-            duckdb_table_function_set_init(tf, Some(bish_init));
-            duckdb_table_function_set_function(tf, Some(bish_scan));
-
-            let state = duckdb_register_table_function(db, tf);
-            let mut tf_to_destroy = tf;
-            duckdb_destroy_table_function(&mut tf_to_destroy);
-
-            if state != DUCKDB_SUCCESS {
-                return Err(RegistrationError::RegisterTableFunctionFailed);
-            }
-        }
-
-        REGISTER_CALLED.store(true, Ordering::Relaxed);
-        Ok(())
+        let result = bish_register_with_conn_impl(conn);
+        duckdb_disconnect(&mut conn as *mut *mut c_void);
+        result
     }
 }
 
-/// Test/process helper indicating whether registration has been attempted.
+/// Called by the C++ shim (shim.cpp) after it constructs a duckdb::Connection.
+///
+/// `conn` is a `duckdb::Connection *` cast to void*.  DuckDB's C API treats
+/// `duckdb_connection` as an opaque pointer to `Connection`, so passing a
+/// `Connection*` here is correct.
+#[no_mangle]
+#[cfg(not(test))]
+pub extern "C" fn bish_register_with_conn(conn: *mut c_void) {
+    if conn.is_null() {
+        return;
+    }
+    let _ = bish_register_with_conn_impl(conn);
+}
+
+/// Inner registration logic shared by both entry paths.
+#[cfg(not(test))]
+fn bish_register_with_conn_impl(conn: *mut c_void) -> Result<(), RegistrationError> {
+    use std::ffi::CString;
+
+    let tf = unsafe { duckdb_create_table_function() };
+    if tf.is_null() {
+        return Err(RegistrationError::CreateTableFunctionFailed);
+    }
+
+    let func_name =
+        CString::new(TABLE_FUNCTION_NAME).expect("static function name is valid CStr");
+
+    unsafe {
+        duckdb_table_function_set_name(tf, func_name.as_ptr());
+
+        // Path parameter (VARCHAR).
+        let mut varchar_type = duckdb_create_logical_type(DUCKDB_TYPE_VARCHAR);
+        duckdb_table_function_add_parameter(tf, varchar_type);
+        duckdb_destroy_logical_type(&mut varchar_type);
+
+        duckdb_table_function_set_bind(tf, Some(bish_bind));
+        duckdb_table_function_set_init(tf, Some(bish_table_init));
+        duckdb_table_function_set_function(tf, Some(bish_scan));
+
+        let rc = duckdb_register_table_function(conn, tf);
+        let mut tf_to_destroy = tf;
+        duckdb_destroy_table_function(&mut tf_to_destroy);
+
+        if rc != DUCKDB_SUCCESS {
+            return Err(RegistrationError::RegisterTableFunctionFailed);
+        }
+    }
+
+    REGISTER_CALLED.store(true, Ordering::Relaxed);
+    Ok(())
+}
+
 pub fn register_bish_functions() {
     REGISTER_CALLED.store(true, Ordering::Relaxed);
 }
@@ -169,40 +195,43 @@ pub fn registration_was_called() -> bool {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// T-09 / T-10 / T-11 — BindData, ScanState, and DuckDB callbacks
+// T-09 / T-10 / T-11 — Bind / Init / Scan callbacks
+//
+// These are compiled into the cdylib but excluded from test binaries so that
+// the test linker does not need to resolve the DuckDB C API symbols.
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[cfg(feature = "duckdb-link")]
+#[cfg(not(test))]
 struct BindData {
     path: String,
 }
 
-#[cfg(feature = "duckdb-link")]
+#[cfg(not(test))]
 struct ScanState {
     batch: bish::reader::RecordBatch,
     schema: bish::types::BishSchema,
     cursor: usize,
 }
 
-#[cfg(feature = "duckdb-link")]
+#[cfg(not(test))]
 unsafe extern "C" fn destroy_bind_data(ptr: *mut c_void) {
     if !ptr.is_null() {
         drop(Box::from_raw(ptr as *mut BindData));
     }
 }
 
-#[cfg(feature = "duckdb-link")]
+#[cfg(not(test))]
 unsafe extern "C" fn destroy_scan_state(ptr: *mut c_void) {
     if !ptr.is_null() {
         drop(Box::from_raw(ptr as *mut ScanState));
     }
 }
 
-/// T-09: Bind callback — reads the file path parameter, opens the .bish file,
-/// maps its schema to DuckDB logical types, and registers result columns.
-#[cfg(feature = "duckdb-link")]
+/// T-09 — Bind: reads path parameter, maps schema to DuckDB logical types.
+#[cfg(not(test))]
 unsafe extern "C" fn bish_bind(bind_info: *mut c_void) {
-    // Retrieve the VARCHAR path parameter at index 0.
+    use std::ffi::{CStr, CString};
+
     let mut val = duckdb_bind_get_parameter(bind_info, 0);
     if val.is_null() {
         let msg = CString::new("read_bish: missing path argument").unwrap();
@@ -222,38 +251,37 @@ unsafe extern "C" fn bish_bind(bind_info: *mut c_void) {
     let path = CStr::from_ptr(path_ptr).to_string_lossy().into_owned();
     duckdb_free(path_ptr as *mut c_void);
 
-    // Open and parse the .bish file schema.
     let file = match std::fs::File::open(&path) {
         Ok(f) => f,
         Err(e) => {
-            let msg = CString::new(format!("read_bish: cannot open '{}': {}", path, e))
-                .unwrap_or_default();
+            let msg =
+                CString::new(format!("read_bish: cannot open '{}': {}", path, e))
+                    .unwrap_or_default();
             duckdb_bind_set_error(bind_info, msg.as_ptr());
             return;
         }
     };
 
-    let mut reader = match BishReader::open(BufReader::new(file)) {
+    let reader = match BishReader::open(std::io::BufReader::new(file)) {
         Ok(r) => r,
         Err(e) => {
-            let msg = CString::new(format!("read_bish: cannot parse '{}': {}", path, e))
-                .unwrap_or_default();
+            let msg =
+                CString::new(format!("read_bish: cannot parse '{}': {}", path, e))
+                    .unwrap_or_default();
             duckdb_bind_set_error(bind_info, msg.as_ptr());
             return;
         }
     };
 
-    // Register each schema field as a result column with the correct DuckDB type.
     let schema = reader.schema().clone();
     for field in &schema.fields {
         let col_name = CString::new(field.name.as_str()).unwrap_or_default();
         let type_id = bish_type_to_duckdb_type_id(&field.data_type);
-        let mut logical_type = duckdb_create_logical_type(type_id);
-        duckdb_bind_add_result_column(bind_info, col_name.as_ptr(), logical_type);
-        duckdb_destroy_logical_type(&mut logical_type);
+        let mut lt = duckdb_create_logical_type(type_id);
+        duckdb_bind_add_result_column(bind_info, col_name.as_ptr(), lt);
+        duckdb_destroy_logical_type(&mut lt);
     }
 
-    // Store bind data for use in the init/scan callbacks.
     let bind_data = Box::new(BindData { path });
     duckdb_bind_set_bind_data(
         bind_info,
@@ -262,9 +290,11 @@ unsafe extern "C" fn bish_bind(bind_info: *mut c_void) {
     );
 }
 
-/// T-10: Init callback — opens the file and reads all data into scan state.
-#[cfg(feature = "duckdb-link")]
-unsafe extern "C" fn bish_init(init_info: *mut c_void) {
+/// T-10 — Init: opens the .bish file and reads all rows into ScanState.
+#[cfg(not(test))]
+unsafe extern "C" fn bish_table_init(init_info: *mut c_void) {
+    use std::ffi::CString;
+
     let bind_ptr = duckdb_init_get_bind_data(init_info) as *const BindData;
     if bind_ptr.is_null() {
         return;
@@ -274,25 +304,22 @@ unsafe extern "C" fn bish_init(init_info: *mut c_void) {
     let file = match std::fs::File::open(path) {
         Ok(f) => f,
         Err(e) => {
-            let msg =
-                CString::new(format!("read_bish init: {}", e)).unwrap_or_default();
+            let msg = CString::new(format!("read_bish init: {}", e)).unwrap_or_default();
             duckdb_init_set_error(init_info, msg.as_ptr());
             return;
         }
     };
 
-    let mut reader = match BishReader::open(BufReader::new(file)) {
+    let mut reader = match BishReader::open(std::io::BufReader::new(file)) {
         Ok(r) => r,
         Err(e) => {
-            let msg =
-                CString::new(format!("read_bish init: {}", e)).unwrap_or_default();
+            let msg = CString::new(format!("read_bish init: {}", e)).unwrap_or_default();
             duckdb_init_set_error(init_info, msg.as_ptr());
             return;
         }
     };
 
     let schema = reader.schema().clone();
-
     let batch = match reader.read_all() {
         Ok(b) => b,
         Err(e) => {
@@ -315,9 +342,8 @@ unsafe extern "C" fn bish_init(init_info: *mut c_void) {
     );
 }
 
-/// T-11: Scan callback — emits up to DUCKDB_VECTOR_SIZE rows per call into
-/// the output DataChunk. Returns chunk size 0 to signal EOF.
-#[cfg(feature = "duckdb-link")]
+/// T-11 — Scan: emits up to DUCKDB_VECTOR_SIZE rows per call.
+#[cfg(not(test))]
 unsafe extern "C" fn bish_scan(function_info: *mut c_void, output_chunk: *mut c_void) {
     let state_ptr = duckdb_function_get_init_data(function_info) as *mut ScanState;
     if state_ptr.is_null() {
@@ -334,17 +360,12 @@ unsafe extern "C" fn bish_scan(function_info: *mut c_void, output_chunk: *mut c_
 
     let chunk_size = remaining.min(DUCKDB_VECTOR_SIZE);
 
-    // Iterate over projected columns in the batch.
     for (col_pos, col_values) in state.batch.columns.iter().enumerate() {
-        // col_pos maps to the col_idx in the DataChunk.
-        // The original schema index is in batch.column_indices[col_pos].
         let schema_idx = state.batch.column_indices[col_pos];
         let field = &state.schema.fields[schema_idx];
-
         let vec = duckdb_data_chunk_get_vector(output_chunk, col_pos as u64);
 
         match &field.data_type {
-            // ── Integer / temporal types → i64_values ──────────────────────
             BishType::Int8
             | BishType::Int16
             | BishType::Int32
@@ -360,23 +381,15 @@ unsafe extern "C" fn bish_scan(function_info: *mut c_void, output_chunk: *mut c_
             | BishType::Date32 => {
                 emit_i64_column(vec, &col_values.i64_values, state.cursor, chunk_size);
             }
-
-            // ── Float32 ─────────────────────────────────────────────────────
             BishType::Float32 => {
                 emit_f32_column(vec, &col_values.f32_values, state.cursor, chunk_size);
             }
-
-            // ── Float64 ─────────────────────────────────────────────────────
             BishType::Float64 => {
                 emit_f64_column(vec, &col_values.f64_values, state.cursor, chunk_size);
             }
-
-            // ── Boolean ─────────────────────────────────────────────────────
             BishType::Boolean => {
                 emit_bool_column(vec, &col_values.bool_values, state.cursor, chunk_size);
             }
-
-            // ── String / Binary / fallback ──────────────────────────────────
             _ => {
                 emit_bytes_column(vec, &col_values.bytes_values, state.cursor, chunk_size);
             }
@@ -388,23 +401,14 @@ unsafe extern "C" fn bish_scan(function_info: *mut c_void, output_chunk: *mut c_
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Column emission helpers
+// Column emission helpers (cdylib only)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Emits a slice of Option<i64> into a DuckDB vector, setting the validity
-/// bitmask for any NULL entries.
-#[cfg(feature = "duckdb-link")]
-unsafe fn emit_i64_column(
-    vec: *mut c_void,
-    values: &[Option<i64>],
-    start: usize,
-    count: usize,
-) {
+#[cfg(not(test))]
+unsafe fn emit_i64_column(vec: *mut c_void, values: &[Option<i64>], start: usize, count: usize) {
     let slice = &values[start..start + count];
-    let has_nulls = slice.iter().any(|v| v.is_none());
     let data_ptr = duckdb_vector_get_data(vec) as *mut i64;
-
-    if has_nulls {
+    if slice.iter().any(|v| v.is_none()) {
         duckdb_vector_ensure_validity_writable(vec);
         let validity = duckdb_vector_get_validity(vec);
         for (i, val) in slice.iter().enumerate() {
@@ -423,18 +427,11 @@ unsafe fn emit_i64_column(
     }
 }
 
-#[cfg(feature = "duckdb-link")]
-unsafe fn emit_f32_column(
-    vec: *mut c_void,
-    values: &[Option<f32>],
-    start: usize,
-    count: usize,
-) {
+#[cfg(not(test))]
+unsafe fn emit_f32_column(vec: *mut c_void, values: &[Option<f32>], start: usize, count: usize) {
     let slice = &values[start..start + count];
-    let has_nulls = slice.iter().any(|v| v.is_none());
     let data_ptr = duckdb_vector_get_data(vec) as *mut f32;
-
-    if has_nulls {
+    if slice.iter().any(|v| v.is_none()) {
         duckdb_vector_ensure_validity_writable(vec);
         let validity = duckdb_vector_get_validity(vec);
         for (i, val) in slice.iter().enumerate() {
@@ -453,18 +450,11 @@ unsafe fn emit_f32_column(
     }
 }
 
-#[cfg(feature = "duckdb-link")]
-unsafe fn emit_f64_column(
-    vec: *mut c_void,
-    values: &[Option<f64>],
-    start: usize,
-    count: usize,
-) {
+#[cfg(not(test))]
+unsafe fn emit_f64_column(vec: *mut c_void, values: &[Option<f64>], start: usize, count: usize) {
     let slice = &values[start..start + count];
-    let has_nulls = slice.iter().any(|v| v.is_none());
     let data_ptr = duckdb_vector_get_data(vec) as *mut f64;
-
-    if has_nulls {
+    if slice.iter().any(|v| v.is_none()) {
         duckdb_vector_ensure_validity_writable(vec);
         let validity = duckdb_vector_get_validity(vec);
         for (i, val) in slice.iter().enumerate() {
@@ -483,8 +473,7 @@ unsafe fn emit_f64_column(
     }
 }
 
-/// DuckDB stores booleans as u8 (1 = true, 0 = false).
-#[cfg(feature = "duckdb-link")]
+#[cfg(not(test))]
 unsafe fn emit_bool_column(
     vec: *mut c_void,
     values: &[Option<bool>],
@@ -492,10 +481,8 @@ unsafe fn emit_bool_column(
     count: usize,
 ) {
     let slice = &values[start..start + count];
-    let has_nulls = slice.iter().any(|v| v.is_none());
     let data_ptr = duckdb_vector_get_data(vec) as *mut u8;
-
-    if has_nulls {
+    if slice.iter().any(|v| v.is_none()) {
         duckdb_vector_ensure_validity_writable(vec);
         let validity = duckdb_vector_get_validity(vec);
         for (i, val) in slice.iter().enumerate() {
@@ -514,34 +501,27 @@ unsafe fn emit_bool_column(
     }
 }
 
-/// Emits Utf8 or Binary column values using DuckDB's string assignment API.
-/// `duckdb_vector_assign_string_element_len` handles inline vs heap strings.
-#[cfg(feature = "duckdb-link")]
+#[cfg(not(test))]
 unsafe fn emit_bytes_column(
     vec: *mut c_void,
     values: &[Option<Vec<u8>>],
     start: usize,
     count: usize,
 ) {
+    use std::ffi::c_char;
     let slice = &values[start..start + count];
-    let has_nulls = slice.iter().any(|v| v.is_none());
-
-    if has_nulls {
+    if slice.iter().any(|v| v.is_none()) {
         duckdb_vector_ensure_validity_writable(vec);
         let validity = duckdb_vector_get_validity(vec);
         for (i, val) in slice.iter().enumerate() {
             match val {
-                Some(bytes) => {
-                    duckdb_vector_assign_string_element_len(
-                        vec,
-                        i as u64,
-                        bytes.as_ptr() as *const c_char,
-                        bytes.len() as u64,
-                    );
-                }
-                None => {
-                    set_null(validity, i);
-                }
+                Some(bytes) => duckdb_vector_assign_string_element_len(
+                    vec,
+                    i as u64,
+                    bytes.as_ptr() as *const c_char,
+                    bytes.len() as u64,
+                ),
+                None => set_null(validity, i),
             }
         }
     } else {
@@ -550,7 +530,7 @@ unsafe fn emit_bytes_column(
                 duckdb_vector_assign_string_element_len(
                     vec,
                     i as u64,
-                    bytes.as_ptr() as *const c_char,
+                    bytes.as_ptr() as *const std::ffi::c_char,
                     bytes.len() as u64,
                 );
             }
@@ -558,30 +538,28 @@ unsafe fn emit_bytes_column(
     }
 }
 
-/// Clears bit `row` in a DuckDB validity mask, marking that row as NULL.
-/// Validity mask: 64 entries per u64; bit=1 means valid, bit=0 means NULL.
-#[cfg(feature = "duckdb-link")]
+/// Clears bit `row` in a DuckDB validity mask (bit=0 → NULL).
+#[cfg(not(test))]
 #[inline]
 unsafe fn set_null(validity: *mut u64, row: usize) {
-    let word = row / 64;
-    let bit = row % 64;
-    *validity.add(word) &= !(1u64 << bit);
+    *validity.add(row / 64) &= !(1u64 << (row % 64));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DuckDB C API declarations (resolved at load time from DuckDB process)
+// DuckDB C API — resolved at runtime from the host DuckDB process.
+// Not compiled in test mode to avoid linker errors.
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[cfg(feature = "duckdb-link")]
+#[cfg(not(test))]
 unsafe extern "C" {
-    // Table function lifecycle
+    // Database / connection lifecycle.
+    fn duckdb_connect(database: *mut c_void, out_connection: *mut *mut c_void) -> u32;
+    fn duckdb_disconnect(connection: *mut *mut c_void);
+
     fn duckdb_create_table_function() -> *mut c_void;
     fn duckdb_destroy_table_function(table_function: *mut *mut c_void);
-    fn duckdb_table_function_set_name(table_function: *mut c_void, name: *const c_char);
-    fn duckdb_table_function_add_parameter(
-        table_function: *mut c_void,
-        logical_type: *mut c_void,
-    );
+    fn duckdb_table_function_set_name(table_function: *mut c_void, name: *const std::ffi::c_char);
+    fn duckdb_table_function_add_parameter(table_function: *mut c_void, logical_type: *mut c_void);
     fn duckdb_table_function_set_bind(
         table_function: *mut c_void,
         bind: Option<unsafe extern "C" fn(*mut c_void)>,
@@ -596,15 +574,13 @@ unsafe extern "C" {
     );
     fn duckdb_register_table_function(connection: *mut c_void, function: *mut c_void) -> u32;
 
-    // Logical types
     fn duckdb_create_logical_type(type_id: u32) -> *mut c_void;
     fn duckdb_destroy_logical_type(type_: *mut *mut c_void);
 
-    // Bind callbacks
     fn duckdb_bind_get_parameter(info: *mut c_void, index: u64) -> *mut c_void;
     fn duckdb_bind_add_result_column(
         info: *mut c_void,
-        name: *const c_char,
+        name: *const std::ffi::c_char,
         logical_type: *mut c_void,
     );
     fn duckdb_bind_set_bind_data(
@@ -612,26 +588,22 @@ unsafe extern "C" {
         bind_data: *mut c_void,
         destroy: Option<unsafe extern "C" fn(*mut c_void)>,
     );
-    fn duckdb_bind_set_error(info: *mut c_void, error: *const c_char);
+    fn duckdb_bind_set_error(info: *mut c_void, error: *const std::ffi::c_char);
 
-    // Value extraction
-    fn duckdb_get_varchar(value: *mut c_void) -> *mut c_char;
+    fn duckdb_get_varchar(value: *mut c_void) -> *mut std::ffi::c_char;
     fn duckdb_destroy_value(value: *mut *mut c_void);
     fn duckdb_free(ptr: *mut c_void);
 
-    // Init callbacks
     fn duckdb_init_get_bind_data(info: *mut c_void) -> *mut c_void;
     fn duckdb_init_set_init_data(
         info: *mut c_void,
         init_data: *mut c_void,
         destroy: Option<unsafe extern "C" fn(*mut c_void)>,
     );
-    fn duckdb_init_set_error(info: *mut c_void, error: *const c_char);
+    fn duckdb_init_set_error(info: *mut c_void, error: *const std::ffi::c_char);
 
-    // Scan callbacks
     fn duckdb_function_get_init_data(info: *mut c_void) -> *mut c_void;
 
-    // DataChunk / vector access
     fn duckdb_data_chunk_get_vector(chunk: *mut c_void, col_idx: u64) -> *mut c_void;
     fn duckdb_data_chunk_set_size(chunk: *mut c_void, size: u64);
     fn duckdb_vector_get_data(vector: *mut c_void) -> *mut c_void;
@@ -640,7 +612,7 @@ unsafe extern "C" {
     fn duckdb_vector_assign_string_element_len(
         vector: *mut c_void,
         index: u64,
-        str: *const c_char,
+        str: *const std::ffi::c_char,
         str_len: u64,
     );
 }
@@ -679,7 +651,6 @@ mod tests {
     #[test]
     fn registration_requires_non_null_db_handle() {
         REGISTER_CALLED.store(false, Ordering::Relaxed);
-
         let err = register_bish_functions_for_db(std::ptr::null_mut()).unwrap_err();
         assert_eq!(err, RegistrationError::NullDatabaseHandle);
         assert!(!registration_was_called());

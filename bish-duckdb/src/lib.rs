@@ -15,20 +15,21 @@ pub use table_fn::{
     register_bish_functions, register_bish_functions_for_db, BishTableFunction, RegistrationError,
 };
 
-/// Extension entry point expected by DuckDB loaders.
-#[no_mangle]
-pub extern "C" fn bish_init(db: *mut c_void) {
-    // Best-effort for now; the initialization ABI should not panic.
-    let _ = register_bish_functions_for_db(db);
-}
-
-/// Canonical DuckDB extension ABI entrypoint.
+/// Canonical DuckDB extension ABI entrypoint (DuckDB 1.x).
 ///
-/// Returning 0 indicates success to DuckDB.
+/// DuckDB calls this after loading the shared library.
+/// Returns 0 to indicate success.
 #[no_mangle]
 pub extern "C" fn duckdb_extension_init(db: *mut c_void) -> i32 {
-    bish_init(db);
+    let _ = register_bish_functions_for_db(db);
     0
+}
+
+/// Legacy-style extension entry point used by some DuckDB loaders that
+/// call `{stem}_init(db)` instead of `duckdb_extension_init`.
+#[no_mangle]
+pub extern "C" fn bish_duckdb_init(db: *mut c_void) {
+    let _ = register_bish_functions_for_db(db);
 }
 
 /// Canonical DuckDB extension ABI version symbol.
